@@ -1,6 +1,8 @@
 .env
+node_modules/
 
 EXPLICACAO_CODIGO.txt
 
 Relatorio_Estagio_Obrigatorio_Final.pdf
 slides.pdf
+IMPLEMENTACAO_CHAT_WEBSOCKET.txt

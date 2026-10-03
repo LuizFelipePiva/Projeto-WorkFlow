@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import api from "../../../services/api";
+import { requestChat } from "../../../services/chatSocket";
 import ConfirmActionModal from "../../../shared/components/ConfirmActionModal";
 import CompleteJobModal from "../components/CompleteJobModal";
 import DeleteJobModal from "../../../shared/components/DeleteJobModal";
@@ -211,12 +212,12 @@ export default function Jobs() {
     if (!selectedJob) return;
 
     try {
-      const response = await api.post("/chat/conversations", {
+      const response = await requestChat("chat:conversations:create", {
         id_vaga_conversa: selectedJob.id_vagas,
         id_user_freelancer_conversa: candidate.user_id,
       });
 
-      const conversationId = response.data?.id_conversa;
+      const conversationId = response.id_conversa;
 
       if (!conversationId) {
         setCandidatesError("Não foi possível abrir o chat");
@@ -225,7 +226,7 @@ export default function Jobs() {
 
       navigate(`/chat?conversation=${conversationId}`);
     } catch (error) {
-      setCandidatesError(error.response?.data?.message || "Erro ao abrir chat");
+      setCandidatesError(error.message || "Erro ao abrir chat");
     }
   };
 

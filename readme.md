@@ -4,8 +4,8 @@ Este projeto e uma aplicacao web para conectar contratantes e freelancers. O sis
 
 O projeto esta dividido em duas partes:
 
-- `frontend`: interface web feita com React, Vite, Tailwind CSS, Axios e React Router.
-- `backend`: API feita com Node.js, Express, MySQL, JWT e bcrypt.
+- `frontend`: interface web feita com React, Vite, Tailwind CSS, Axios, React Router e Socket.IO Client.
+- `backend`: API feita com Node.js, Express, MySQL, JWT, bcrypt e Socket.IO.
 
 ## Funcionalidades
 
@@ -14,6 +14,9 @@ O projeto esta dividido em duas partes:
 - Freelancer pode visualizar vagas disponiveis, filtrar vagas, candidatar-se, remover candidaturas, cadastrar curriculo, conversar no chat e ver projetos concluidos.
 - Contratante pode criar, editar e excluir vagas, visualizar candidatos, aprovar ou recusar candidaturas, conversar com candidatos e finalizar uma vaga com avaliacao.
 - Autenticacao por token JWT salvo no `localStorage`.
+- Chat em tempo real por WebSocket, com historico no MySQL, reconexao e sincronizacao entre participantes e abas.
+- Notificacoes de novas mensagens salvas no MySQL, com contador no sino e leitura individual ou de todas, preservada ao recarregar.
+- A implementacao do chat esta explicada em [IMPLEMENTACAO_CHAT_WEBSOCKET.txt](IMPLEMENTACAO_CHAT_WEBSOCKET.txt).
 
 ## Estrutura do Projeto
 
@@ -30,8 +33,8 @@ O projeto esta dividido em duas partes:
 |   |   |   |   +-- controllers
 |   |   |   |   +-- routes
 |   |   |   +-- Chat
-|   |   |   |   +-- controllers
-|   |   |   |   +-- routes
+|   |   |   |   +-- services
+|   |   |   |   +-- socket
 |   |   |   +-- Jobs
 |   |   |   |   +-- controllers
 |   |   |   |   +-- routes
@@ -69,13 +72,13 @@ O projeto esta dividido em duas partes:
 +-- readme.md
 ```
 
-No backend, cada funcionalidade fica em `backend/src/features/<Feature>`, com
-suas pastas `controllers` e `routes`: `Auth` (autenticacao), `Jobs` (vagas),
-`AppliedJobs` (candidaturas), `Profile` (perfil) e `Chat` (conversas).
+No backend, cada funcionalidade fica em `backend/src/features/<Feature>`.
+`Auth`, `Jobs`, `AppliedJobs` e `Profile` usam `controllers` e `routes` HTTP.
+`Chat` usa `services` para as regras e consultas ao banco e `socket` para os eventos WebSocket.
 A conexao com o banco fica em `backend/src/shared/config/db.js`, e o middleware
 de autenticacao fica em `backend/src/shared/middlewares/auth.js`, pois sao
 usados por varias features. O arquivo `backend/src/app.js` registra as rotas
-e inicia o servidor. Os endpoints da API permanecem os mesmos.
+e inicia o servidor HTTP compartilhado com o WebSocket. As antigas rotas HTTP do chat foram substituidas por eventos.
 
 As paginas ficam em `frontend/src/features/<Feature>/pages`. Componentes usados
 somente por uma pagina ficam em `components` dentro da respectiva feature.
@@ -117,7 +120,10 @@ DB_NAME=nome_do_banco
 JWT_SECRET=sua_chave_secreta
 ```
 
-O frontend esta configurado para chamar a API em `http://localhost:3000`. Caso mude a porta do backend, ajuste tambem o arquivo `frontend/src/services/api.js`.
+O frontend usa `http://localhost:3000` por padrao para HTTP e WebSocket.
+Para mudar, defina `VITE_API_URL` no `frontend/.env` e reinicie o Vite.
+Para permitir outro endereco de frontend no WebSocket, configure `FRONTEND_URLS`
+no `backend/.env` com as origens separadas por virgula (por exemplo, `http://localhost:3001`).
 
 ## Banco de Dados
 
@@ -179,7 +185,7 @@ CREATE TABLE vagas_aplicadas (
 );
 
 CREATE TABLE conversa (
-  id_conversa INT PRIMARY KEY,
+  id_conversa INT AUTO_INCREMENT PRIMARY KEY,
   id_user_contratante_conversa INT NOT NULL,
   id_user_freelancer_conversa INT NOT NULL,
   id_vaga_conversa INT NOT NULL,
@@ -190,7 +196,7 @@ CREATE TABLE conversa (
 );
 
 CREATE TABLE mensagem (
-  id_mensagem INT PRIMARY KEY,
+  id_mensagem INT AUTO_INCREMENT PRIMARY KEY,
   id_conversa_mensagem INT NOT NULL,
   id_sender INT NOT NULL,
   conteudo TEXT NOT NULL,
@@ -217,6 +223,14 @@ Em `vagas`, `flag_status` funciona assim:
 - `1`: vaga concluida
 
 ## Rodando o Backend
+
+Depois de criar as tabelas `users` e `conversa`, prepare as notificacoes na pasta `backend`:
+
+```bash
+npm run db:notifications
+```
+
+O comando aplica `backend/sql/notifications.sql` usando o `.env`, sem apagar registros existentes.
 
 Na pasta `backend`, execute:
 
@@ -355,15 +369,36 @@ GET    /vagas/minhasVagas
 DELETE /vagas/minhasVagas/removerCandidatura/:idvagas_aplicadas
 ```
 
-### Chat
+### Chat (eventos Socket.IO sobre WebSocket)
+
+Conexao na mesma porta do backend, usando o caminho padrao `/socket.io/` e
+`transports: ["websocket"]`. O JWT e enviado em `auth.token`.
 
 ```text
-GET    /chat/conversations
-POST   /chat/conversations
-GET    /chat/conversations/:id_conversa/messages
-POST   /chat/conversations/:id_conversa/messages
-DELETE /chat/conversations/:id_conversa
+chat:conversations:list       Listar conversas
+chat:conversations:create     Criar ou reutilizar conversa
+chat:messages:list            Buscar historico
+chat:messages:send            Enviar e persistir mensagem
+chat:conversations:delete     Excluir conversa e historico
 ```
+
+O servidor publica `chat:message:created`, `chat:conversations:changed` e
+`chat:conversation:deleted` somente para os participantes. Cada solicitacao
+recebe uma confirmacao `{ ok, data }` ou `{ ok: false, error }`.
+Em bancos antigos sem IDs automaticos, aplique `backend/sql/chat-websocket.sql`.
+
+### Notificacoes (na mesma conexao WebSocket)
+
+```text
+notifications:list          Listar notificacoes e quantidade nao lida
+notifications:read          Marcar uma como lida, enviando { id }
+notifications:read-all      Marcar todas da conta como lidas
+```
+
+O servidor publica `notification:created` somente para o destinatario,
+`notification:read` para sincronizar as abas da conta e `notifications:changed`
+apos excluir uma conversa. O usuario e obtido do JWT; leitura e contador ficam
+persistidos no MySQL. Apenas novas mensagens geram notificacoes.
 
 As rotas privadas precisam receber o token JWT no cabecalho:
 
@@ -378,7 +413,9 @@ No frontend isso ja e feito automaticamente pelo interceptor em `frontend/src/se
 Backend:
 
 ```bash
+npm run db:notifications
 npm run dev
+npm test
 ```
 
 Frontend:
@@ -388,7 +425,12 @@ npm run dev
 npm run build
 npm run preview
 npm run lint
+npm run test:chat
 ```
+
+Os testes do backend criam e removem um banco temporario `chat_ws_test_*` usando
+as credenciais do `.env`; esse usuario MySQL precisa de permissao para criar
+e excluir esse banco de teste. Os dados da aplicacao nao sao alterados.
 
 ## Problemas Comuns
 

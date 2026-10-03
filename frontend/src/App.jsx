@@ -9,6 +9,7 @@ import Jobs from "./features/Jobs/pages/Jobs";
 import Login from "./features/Login/pages/Login";
 import MainPage from "./features/MainPage/pages/MainPage";
 import Register from "./features/Register/pages/Register";
+import Profile from "./features/Profile/pages/Profile";
 
 import Notification from "./shared/components/Notification";
 import PrivateLayout from "./shared/components/PrivateLayout";
@@ -61,6 +62,7 @@ function App() {
             <Route path="/jobs" element={<Jobs />} />
             <Route path="/jobs/create" element={<CreateJob />} />
             <Route path="/chat" element={<Chat />} />
+            <Route path="/perfil" element={<Profile />} />
           </Route>
         </Routes>
       </BrowserRouter>

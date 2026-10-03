@@ -1,16 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import {
   BriefcaseBusiness,
   MessageCircle,
   MoreVertical,
-  Paperclip,
   Search,
   Send,
   Trash2,
 } from "lucide-react";
 
-import api from "../../../services/api";
+import { requestChat } from "../../../services/chatSocket";
+import useChat from "../hooks/useChat";
 import ConfirmActionModal from "../../../shared/components/ConfirmActionModal";
 
 const formatMessageTime = (date) => {
@@ -24,22 +24,25 @@ const formatMessageTime = (date) => {
 
 export default function Chat() {
   const { user, isFreelancer } = useOutletContext();
-  const [searchParams] = useSearchParams();
-  const [conversations, setConversations] = useState([]);
-  const [activeConversationId, setActiveConversationId] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const {
+    conversations, activeConversationId, messages, connected,
+    isLoadingConversations, isLoadingMessages, error, dispatch,
+  } = useChat(Number(searchParams.get("conversation")));
+  const messageListRef = useRef(null);
   const [search, setSearch] = useState("");
-  const [message, setMessage] = useState("");
-  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [draft, setDraft] = useState({ conversationId: null, text: "" });
+  const message = Number(draft.conversationId) === Number(activeConversationId) ? draft.text : "";
   const [isSending, setIsSending] = useState(false);
   const [isDeletingConversation, setIsDeletingConversation] = useState(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
-  const [showDeleteChatModal, setShowDeleteChatModal] = useState(false);
-  const [error, setError] = useState("");
+  const [deleteConversationId, setDeleteConversationId] = useState(null);
+  const conversationToDelete = conversations.find(
+    (conversation) => Number(conversation.id_conversa) === Number(deleteConversationId)
+  );
 
   const activeConversation = conversations.find(
-    (conversation) => conversation.id_conversa === activeConversationId
+    (conversation) => Number(conversation.id_conversa) === Number(activeConversationId)
   );
 
   const filteredConversations = conversations.filter((conversation) => {
@@ -54,63 +57,15 @@ export default function Chat() {
   });
 
   useEffect(() => {
-    const loadConversations = async () => {
-      try {
-        setIsLoadingConversations(true);
-        setError("");
-
-        const response = await api.get("/chat/conversations");
-        setConversations(response.data);
-
-        const conversationFromUrl = Number(searchParams.get("conversation"));
-        const hasConversationFromUrl = response.data.some(
-          (conversation) => conversation.id_conversa === conversationFromUrl
-        );
-
-        if (response.data.length > 0) {
-          setActiveConversationId((currentId) =>
-            hasConversationFromUrl
-              ? conversationFromUrl
-              : currentId ?? response.data[0].id_conversa
-          );
-        }
-      } catch (err) {
-        setError(err.response?.data?.message || "Erro ao buscar conversas");
-      } finally {
-        setIsLoadingConversations(false);
-      }
-    };
-
-    loadConversations();
-  }, [searchParams]);
-
-  useEffect(() => {
-    if (!activeConversationId) {
-      setMessages([]);
-      return;
-    }
-
-    const loadMessages = async () => {
-      try {
-        setIsLoadingMessages(true);
-        setError("");
-
-        const response = await api.get(
-          `/chat/conversations/${activeConversationId}/messages`
-        );
-        setMessages(response.data);
-      } catch (err) {
-        setError(err.response?.data?.message || "Erro ao buscar mensagens");
-      } finally {
-        setIsLoadingMessages(false);
-      }
-    };
-
-    loadMessages();
-  }, [activeConversationId]);
+    const list = messageListRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [messages, activeConversationId]);
 
   const handleSelectConversation = (conversationId) => {
-    setActiveConversationId(conversationId);
+    dispatch({ type: "select", conversationId });
+    setSearchParams({ conversation: conversationId }, { replace: true });
+    setDraft({ conversationId, text: "" });
+    setDeleteConversationId(null);
     setIsOptionsOpen(false);
   };
 
@@ -119,58 +74,39 @@ export default function Chat() {
 
     const trimmedMessage = message.trim();
 
-    if (!trimmedMessage || !activeConversation) return;
+    if (!trimmedMessage || !activeConversation || !connected || isSending) return;
+    const submittedMessage = message;
 
     try {
       setIsSending(true);
-      setError("");
+      dispatch({ type: "clearError" });
 
-      const response = await api.post(
-        `/chat/conversations/${activeConversation.id_conversa}/messages`,
-        { conteudo: trimmedMessage }
-      );
-
-      setMessages((prev) => [...prev, response.data]);
-      setConversations((prev) =>
-        prev.map((conversation) =>
-          conversation.id_conversa === activeConversation.id_conversa
-            ? {
-                ...conversation,
-                last_message: response.data.conteudo,
-                last_message_created_at: response.data.created_at,
-              }
-            : conversation
-        )
-      );
-      setMessage("");
+      const savedMessage = await requestChat("chat:messages:send", {
+        id_conversa: activeConversation.id_conversa,
+        conteudo: trimmedMessage,
+      });
+      dispatch({ type: "messageCreated", message: savedMessage });
+      setDraft((current) => Number(current.conversationId) === Number(savedMessage.id_conversa_mensagem)
+        && current.text === submittedMessage ? { ...current, text: "" } : current);
     } catch (err) {
-      setError(err.response?.data?.message || "Erro ao enviar mensagem");
+      dispatch({ type: "error", message: err.message });
     } finally {
       setIsSending(false);
     }
   };
 
   const handleDeleteConversation = async () => {
-    if (!activeConversation) return;
+    if (!conversationToDelete || !connected || isDeletingConversation) return;
 
     try {
       setIsDeletingConversation(true);
-      setError("");
-
-      await api.delete(`/chat/conversations/${activeConversation.id_conversa}`);
-
-      const nextConversations = conversations.filter(
-        (conversation) =>
-          conversation.id_conversa !== activeConversation.id_conversa
-      );
-
-      setConversations(nextConversations);
-      setActiveConversationId(nextConversations[0]?.id_conversa ?? null);
-      setMessages([]);
+      dispatch({ type: "clearError" });
+      await requestChat("chat:conversations:delete", { id_conversa: conversationToDelete.id_conversa });
+      dispatch({ type: "conversationDeleted", conversationId: conversationToDelete.id_conversa });
       setIsOptionsOpen(false);
-      setShowDeleteChatModal(false);
+      setDeleteConversationId(null);
     } catch (err) {
-      setError(err.response?.data?.message || "Erro ao apagar chat");
+      dispatch({ type: "error", message: err.message });
     } finally {
       setIsDeletingConversation(false);
     }
@@ -188,12 +124,19 @@ export default function Chat() {
                   ? "Converse com contratantes"
                   : "Converse com candidatos"}
               </p>
+              <p role="status" className={`text-xs mt-2 ${connected ? "text-green-600" : "text-amber-600"}`}>
+                {connected ? "Conectado" : "Conectando ao chat..."}
+              </p>
             </div>
 
             <span className="h-11 w-11 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
               <BriefcaseBusiness size={21} />
             </span>
           </div>
+
+          {error && (
+            <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-600">{error}</p>
+          )}
 
           <div className="relative mt-5">
             <Search
@@ -279,10 +222,10 @@ export default function Chat() {
                       type="button"
                       className="w-full px-3 py-2 rounded-lg text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-70"
                       onClick={() => {
-                        setShowDeleteChatModal(true);
+                        setDeleteConversationId(activeConversationId);
                         setIsOptionsOpen(false);
                       }}
-                      disabled={isDeletingConversation}
+                      disabled={isDeletingConversation || !connected}
                     >
                       <Trash2 size={16} />
                       {isDeletingConversation ? "Apagando..." : "Apagar chat"}
@@ -292,13 +235,7 @@ export default function Chat() {
               </div>
             </header>
 
-            {error && (
-              <div className="mx-5 mt-4 rounded-xl bg-red-50 text-red-600 px-4 py-3 text-sm">
-                {error}
-              </div>
-            )}
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+            <div ref={messageListRef} className="flex-1 overflow-y-auto p-5 space-y-4">
               {isLoadingMessages && (
                 <p className="text-sm text-gray-500">Carregando mensagens...</p>
               )}
@@ -313,7 +250,7 @@ export default function Chat() {
               )}
 
               {messages.map((item) => {
-                const isMine = item.id_sender === user.id;
+                const isMine = Number(item.id_sender) === Number(user.id);
 
                 return (
                   <div
@@ -327,7 +264,7 @@ export default function Chat() {
                           : "bg-white text-gray-800 border border-gray-200 rounded-bl-md"
                       }`}
                     >
-                      <p className="text-sm leading-relaxed">{item.conteudo}</p>
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{item.conteudo}</p>
                       <p
                         className={`text-[11px] mt-2 text-right ${
                           isMine ? "text-blue-100" : "text-gray-400"
@@ -349,8 +286,11 @@ export default function Chat() {
 
               <input
                 type="text"
+                maxLength={4000}
+                disabled={!connected || isSending}
+                aria-label="Mensagem"
                 value={message}
-                onChange={(event) => setMessage(event.target.value)}
+                onChange={(event) => setDraft({ conversationId: activeConversationId, text: event.target.value })}
                 placeholder="Digite sua mensagem..."
                 className="flex-1 border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
@@ -358,7 +298,7 @@ export default function Chat() {
               <button
                 type="submit"
                 className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                disabled={!message.trim() || isSending}
+                disabled={!message.trim() || isSending || !connected}
               >
                 <Send size={18} />
                 {isSending ? "Enviando..." : "Enviar"}
@@ -381,16 +321,16 @@ export default function Chat() {
       </section>
 
       <ConfirmActionModal
-        isOpen={showDeleteChatModal}
+        isOpen={Boolean(conversationToDelete)}
         title="Apagar chat"
         message="Tem certeza que deseja apagar o chat com"
-        subject={activeConversation?.other_user_name}
-        onClose={() => setShowDeleteChatModal(false)}
+        subject={conversationToDelete?.other_user_name}
+        onClose={() => setDeleteConversationId(null)}
         onConfirm={handleDeleteConversation}
         isLoading={isDeletingConversation}
         loadingText="Apagando..."
         confirmText="Apagar"
-        confirmDisabled={!activeConversation}
+        confirmDisabled={!conversationToDelete || !connected}
         variant="danger"
       />
     </div>
